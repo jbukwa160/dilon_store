@@ -62,5 +62,10 @@ export function shippingPrice(methodId: ShippingMethodId, subtotal: number): num
   return SHIPPING.methods.find((m) => m.id === methodId)?.price ?? SHIPPING.methods[0].price;
 }
 
+/** Discount for buying a product together with its matching extras ("Двойка" = 2 products, "Тройка" = 3). */
+export const BUNDLE_DISCOUNT = { 2: 0.05, 3: 0.1 } as const;
+
 export const AGE_COOKIE = "kd_age";
 export const CART_KEY = "kd_cart_v2";
+/** Bundles taken from product pages, kept next to the cart so their discount applies while all items are in it. */
+export const CART_BUNDLES_KEY = "kd_cart_bundles_v1";

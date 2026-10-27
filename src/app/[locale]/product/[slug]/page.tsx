@@ -2,18 +2,22 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AddToCart } from "@/components/cart/AddToCart";
-import { IconBox, IconCash, IconReturn, IconTruck } from "@/components/Icons";
+import { type BundleOffer, BundleOffers } from "@/components/BundleOffers";
+import { IconBox, IconCash, IconCheck, IconReturn, IconTruck } from "@/components/Icons";
 import { Breadcrumbs } from "@/components/listing/Listing";
 import { ProductGrid } from "@/components/ProductCard";
+import { ProductGallery } from "@/components/ProductGallery";
 import { ProductImage } from "@/components/ProductImage";
 import { isLocale, type Locale, locales, localePath } from "@/i18n/config";
 import { DICT } from "@/i18n/dict";
 import { alternates, paths } from "@/i18n/paths";
-import { allProducts, getProduct, related, toCard } from "@/lib/catalog";
+import { bundlesFor } from "@/lib/bundles";
+import { allProducts, getBySku, getProduct, related, toCard } from "@/lib/catalog";
+import { getDetails } from "@/lib/details";
 import { decimal, price, priceShort } from "@/lib/format";
 import { SHIPPING, SITE } from "@/lib/site";
 import { CATEGORY_BY_ID, findSub } from "@/lib/taxonomy";
-import type { Feature } from "@/lib/types";
+import type { Feature, FeatureKey, ProductDetails, SpecKey } from "@/lib/types";
 
 type Props = { params: Promise<{ locale: string; slug: string }> };
 
@@ -29,7 +33,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (!p || !isLocale(locale)) return {};
   const sub = findSub(p.category, p.sub)!;
   const name = p.name[locale];
-  const description = DICT[locale].product.metaDescription(name, p.brand, price(p.price, locale), sub.name[locale]);
+  const lead = getDetails(p.sku)?.copy?.[locale].lead;
+  const description = lead ? clip(lead, 160) : DICT[locale].product.metaDescription(name, p.brand, price(p.price, locale), sub.name[locale]);
   return {
     title: name,
     description,
@@ -38,12 +43,39 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   };
 }
 
-/** Facts as label/value rows. Facts without a value ("Waterproof") are grouped into one "Features" row. */
-function factRows(features: Feature[], locale: Locale): [string, string][] {
+/** Cuts text at a word boundary. */
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, text.lastIndexOf(" ", max - 1)).replace(/[,;:—–-]$/, "")}…`;
+}
+
+/** Facts read from the name that a spec from the description already covers. */
+const COVERED_BY: Partial<Record<FeatureKey, SpecKey[]>> = {
+  size: ["length", "size"],
+  clothing: ["size"],
+  volume: ["volume"],
+  weight: ["weight"],
+  count: ["count"],
+  colour: ["colour"],
+  waterproof: ["waterproof"],
+  silicone: ["material"],
+  glass: ["material"],
+  metal: ["material"],
+  leather: ["material"],
+  lace: ["material"],
+};
+
+/**
+ * Specs from the description, then facts read from the name that no spec covers, as label/value rows.
+ * Facts without a value ("Waterproof") are grouped into one "Features" row.
+ */
+function factRows(features: Feature[], specs: ProductDetails["specs"], locale: Locale): [string, string][] {
   const t = DICT[locale].features;
-  const rows: [string, string][] = [];
+  const rows: [string, string][] = specs.map((s) => [DICT[locale].specs[s.key], s.value[locale]]);
   const flags: string[] = [];
+  const keys = new Set(specs.map((s) => s.key));
   for (const [key, value] of features) {
+    if (COVERED_BY[key]?.some((k) => keys.has(k))) continue;
     switch (key) {
       case "size":
         rows.push([t.size, `${decimal(value!, locale)} ${t.units.cm}`]);
@@ -80,6 +112,16 @@ export default async function ProductPage({ params }: Props) {
   const category = CATEGORY_BY_ID.get(p.category)!;
   const sub = findSub(p.category, p.sub)!;
   const name = p.name[locale];
+  const details = getDetails(p.sku);
+  const copy = details?.copy?.[locale];
+  const images = [p.image, ...(details?.gallery ?? [])];
+  const offers: BundleOffer[] = bundlesFor(p).map((b) => ({
+    items: b.skus.map((sku) => toCard(getBySku(sku)!)),
+    roles: b.roles,
+    discount: b.discount,
+    price: b.price,
+    saving: b.saving,
+  }));
   const more = related(p, 4);
   const inStock = p.stock > 0;
   const fromPrice = price(SHIPPING.methods[0].price, locale);
@@ -89,7 +131,7 @@ export default async function ProductPage({ params }: Props) {
       ? [[t.common.brand, <Link key="b" href={P.brand(p.brandSlug)} className="link-underline">{p.brand}</Link>] as [string, React.ReactNode]]
       : []),
     [t.product.type, <Link key="s" href={P.category(category.id, sub.id)} className="link-underline">{sub.name[locale]}</Link>],
-    ...factRows(p.features, locale),
+    ...factRows(p.features, details?.specs ?? [], locale),
     [t.product.code, <span key="c" className="tabular">{p.sku.replace(/^Dilon-/, "")}</span>],
     ...(p.ean ? [["EAN", <span key="e" className="tabular">{p.ean}</span>] as [string, React.ReactNode]] : []),
   ];
@@ -98,7 +140,8 @@ export default async function ProductPage({ params }: Props) {
     "@context": "https://schema.org",
     "@type": "Product",
     name,
-    image: [p.image],
+    image: images,
+    ...(copy ? { description: [copy.lead, ...copy.body].join(" ") } : {}),
     sku: p.sku,
     ...(p.ean ? { gtin: p.ean } : {}),
     ...(p.brand ? { brand: { "@type": "Brand", name: p.brand } } : {}),
@@ -127,9 +170,13 @@ export default async function ProductPage({ params }: Props) {
       />
 
       <div className="mt-6 grid gap-10 lg:grid-cols-[minmax(0,1.08fr)_minmax(0,1fr)] lg:gap-16">
-        <div>
+        <div className="min-w-0">
           <div className="lg:sticky lg:top-[calc(var(--header-h)+1.5rem)]">
-            <ProductImage src={p.image} alt={name} sizes="(min-width: 1320px) 660px, (min-width: 1024px) 50vw, 100vw" highPriority pad="p-[8%]" className="rounded-lg" />
+            {images.length > 1 ? (
+              <ProductGallery images={images} alt={name} />
+            ) : (
+              <ProductImage src={p.image} alt={name} sizes="(min-width: 1320px) 660px, (min-width: 1024px) 50vw, 100vw" highPriority pad="p-[8%]" className="rounded-lg" />
+            )}
           </div>
         </div>
 
@@ -140,6 +187,7 @@ export default async function ProductPage({ params }: Props) {
             </Link>
           )}
           <h1 className="font-display mt-2 text-[2.1rem] leading-[1.08] font-semibold sm:text-[2.75rem]">{name}</h1>
+          {copy && <p className="mt-4 max-w-[38rem] text-[1.0625rem] leading-relaxed text-ink-2">{copy.lead}</p>}
 
           <div className="mt-5 flex items-baseline gap-3">
             <p className="tabular text-[1.75rem] font-semibold">{price(p.price, locale)}</p>
@@ -184,13 +232,41 @@ export default async function ProductPage({ params }: Props) {
             </li>
           </ul>
 
+          {offers.length > 0 && <BundleOffers offers={offers} />}
+
+          {copy && (
+            <section className="mt-10" aria-labelledby="description">
+              <h2 id="description" className="eyebrow text-muted">
+                {t.product.description}
+              </h2>
+              <div className="mt-3 max-w-[38rem] space-y-3.5 text-[0.9375rem] leading-relaxed text-ink-2">
+                {copy.body.map((paragraph, i) => (
+                  <p key={i}>{paragraph}</p>
+                ))}
+              </div>
+              {copy.highlights.length > 0 && (
+                <>
+                  <h3 className="mt-7 text-sm font-semibold">{t.product.highlights}</h3>
+                  <ul className="mt-3 grid gap-x-6 gap-y-2.5 text-sm sm:grid-cols-2">
+                    {copy.highlights.map((h) => (
+                      <li key={h} className="flex gap-2.5">
+                        <IconCheck size={18} className="mt-px shrink-0 text-wine" />
+                        <span>{h}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </section>
+          )}
+
           <section className="mt-10" aria-labelledby="facts">
             <h2 id="facts" className="eyebrow text-muted">
               {t.product.details}
             </h2>
             <dl className="mt-3 divide-y divide-line border-y border-line text-sm">
               {facts.map(([k, v], i) => (
-                <div key={i} className="grid grid-cols-[8.5rem_1fr] gap-4 py-2.5">
+                <div key={i} className="grid grid-cols-[9.5rem_1fr] gap-4 py-2.5">
                   <dt className="text-muted">{k}</dt>
                   <dd>{v}</dd>
                 </div>
@@ -199,10 +275,11 @@ export default async function ProductPage({ params }: Props) {
           </section>
 
           <div className="mt-8 divide-y divide-line border-y border-line">
-            <Accordion title={t.product.howToChoose} open>
+            <Accordion title={t.product.howToChoose} open={!copy}>
               <p>{category.about[locale]}</p>
             </Accordion>
             <Accordion title={t.product.care}>
+              {copy?.care && <p className="mb-3">{copy.care}</p>}
               <ul className="list-disc space-y-1.5 pl-5">
                 {category.care[locale].map((c) => (
                   <li key={c}>{c}</li>

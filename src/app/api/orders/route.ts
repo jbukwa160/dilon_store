@@ -41,6 +41,7 @@ export async function POST(req: NextRequest) {
       number: order.number,
       total: order.total,
       subtotal: order.subtotal,
+      discount: order.discount,
       shipping: order.shipping,
       email: order.customer.email,
       delivery: order.delivery.label,

@@ -5,6 +5,8 @@ import path from "node:path";
 import nodemailer from "nodemailer";
 import { z } from "zod";
 import { isLocale, type Locale } from "@/i18n/config";
+import { applyBundles, type BundleClaim } from "./bundle-math";
+import { bundleDiscount } from "./bundles";
 import { getBySku } from "./catalog";
 import { price } from "./format";
 import { SHIPPING, shippingPrice, SITE, type ShippingMethodId } from "./site";
@@ -106,6 +108,12 @@ export function orderSchema(locale: Locale) {
         .array(z.object({ sku: z.string().max(80), qty: z.number().int().min(1).max(20, m.qty) }))
         .min(1, m.empty)
         .max(50),
+      /** Sets taken from product pages; the server checks each one and sets its discount itself. */
+      bundles: z
+        .array(z.object({ skus: z.array(z.string().max(80)).min(2).max(3) }))
+        .max(30)
+        .optional()
+        .default([]),
       terms: z.literal(true, m.terms),
       adult: z.literal(true, m.adult),
       /** Honeypot: hidden from people, bots fill it in. */
@@ -156,6 +164,9 @@ export type Order = {
   note: string;
   lines: OrderLine[];
   subtotal: number;
+  /** Bundle discounts: which products, how many sets, how much off. */
+  bundles: { skus: string[]; names: string[]; sets: number; discount: number; amount: number }[];
+  discount: number;
   shipping: number;
   total: number;
   payment: "cod";
@@ -199,7 +210,13 @@ export function buildOrder(input: OrderInput, locale: Locale): Order {
   if (problems.length) throw new OrderError([...new Set(problems)].join(" "));
 
   const subtotal = round(lines.reduce((s, l) => s + l.total, 0));
-  const shipping = shippingPrice(input.method, subtotal);
+  const claims: BundleClaim[] = input.bundles.flatMap((b) => {
+    const discount = bundleDiscount(b.skus);
+    return discount === null ? [] : [{ skus: b.skus, discount }];
+  });
+  const applied = applyBundles(lines, claims);
+  const goods = round(subtotal - applied.discount);
+  const shipping = shippingPrice(input.method, goods);
   const method = SHIPPING.methods.find((x) => x.id === input.method)!;
   const now = new Date();
   return {
@@ -218,8 +235,10 @@ export function buildOrder(input: OrderInput, locale: Locale): Order {
     note: input.note,
     lines,
     subtotal,
+    bundles: applied.applied.map((b) => ({ ...b, names: b.skus.map((sku) => getBySku(sku)!.name.bg) })),
+    discount: applied.discount,
     shipping,
-    total: round(subtotal + shipping),
+    total: round(goods + shipping),
     payment: "cod",
     hasEstimatedPrices: estimated,
   };
@@ -234,7 +253,7 @@ function orderNumber(d: Date): string {
 }
 
 export function dataDir(): string {
-  return path.resolve(process.cwd(), process.env.DATA_DIR || "../kadife-data");
+  return path.resolve(/* turbopackIgnore: true */ process.cwd(), process.env.DATA_DIR || "../kadife-data");
 }
 
 /** One JSON object per line. This file is the order book of the shop: back it up. */
@@ -262,6 +281,7 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const MAIL = {
   bg: {
     subtotal: "Междинна сума",
+    discount: "Отстъпка за комплект",
     delivery: "Доставка",
     free: "безплатна",
     total: "Общо за плащане при получаване",
@@ -274,6 +294,7 @@ const MAIL = {
   },
   en: {
     subtotal: "Subtotal",
+    discount: "Bundle discount",
     delivery: "Delivery",
     free: "free",
     total: "Total to pay on delivery",
@@ -295,6 +316,7 @@ function summaryText(o: Order, locale: Locale): string {
     rows,
     "",
     `${t.subtotal}: ${price(o.subtotal, locale)}`,
+    ...(o.discount ? [`${t.discount}: −${price(o.discount, locale)}`] : []),
     `${t.delivery}: ${o.shipping ? price(o.shipping, locale) : t.free}`,
     `${t.total}: ${price(o.total, locale)}`,
     "",
@@ -313,7 +335,10 @@ function summaryHtml(o: Order, locale: Locale): string {
     .join("");
   const where = o.delivery.office ? `${t.office}: ${esc(o.delivery.office)}` : `${t.address}: ${esc(o.delivery.address)}, ${esc(o.delivery.postcode)}`;
   const label = SHIPPING.methods.find((x) => x.id === o.delivery.method)!.label[locale];
-  return `<table style="width:100%;border-collapse:collapse;font:15px/1.5 Arial,sans-serif;color:#1d1416">${rows}
+  const discount = o.discount
+    ? `<tr><td style="padding:6px 0;color:#2f6b4f">${t.discount}</td><td style="padding:6px 0;text-align:right;color:#2f6b4f">−${price(o.discount, locale)}</td></tr>`
+    : "";
+  return `<table style="width:100%;border-collapse:collapse;font:15px/1.5 Arial,sans-serif;color:#1d1416">${rows}${discount}
 <tr><td style="padding-top:12px;border-top:1px solid #e2d6c9">${t.delivery}</td><td style="padding-top:12px;border-top:1px solid #e2d6c9;text-align:right">${o.shipping ? price(o.shipping, locale) : t.free}</td></tr>
 <tr><td style="padding:6px 0;font-weight:bold">${t.total}</td><td style="text-align:right;font-weight:bold">${price(o.total, locale)}</td></tr></table>
 <p style="font:15px/1.5 Arial,sans-serif;color:#4a3c3f">${esc(label)}, ${esc(o.delivery.city)}<br>${where}</p>`;
@@ -329,6 +354,9 @@ export async function mailOrder(o: Order): Promise<void> {
   const from = process.env.MAIL_FROM || `${SITE.name} <${SITE.email}>`;
   const shopTo = process.env.SHOP_EMAIL || SITE.email;
   const customerBlock = `Клиент: ${o.customer.name}\nТелефон: ${o.customer.phone}\nИмейл: ${o.customer.email}\nЕзик на поръчката: ${o.locale === "en" ? "английски" : "български"}${o.note ? `\nБележка: ${o.note}` : ""}`;
+  const sets = o.bundles.length
+    ? `\n\nКомплекти с отстъпка:\n${o.bundles.map((b) => `• ${b.names.join(" + ")}${b.sets > 1 ? ` × ${b.sets}` : ""} (−${Math.round(b.discount * 100)}%): −${price(b.amount, "bg")}`).join("\n")}`
+    : "";
   const warning = o.hasEstimatedPrices ? "\n\nВНИМАНИЕ: поне една цена в поръчката е приблизителна (не е потвърдена в data/prices.csv)." : "";
   const c = MAIL[o.locale];
   const sender = SITE.parcelSender[o.locale];
@@ -339,7 +367,7 @@ export async function mailOrder(o: Order): Promise<void> {
       to: shopTo,
       replyTo: o.customer.email,
       subject: `Нова поръчка ${o.number} — ${price(o.total, "bg")}`,
-      text: `${customerBlock}\n\n${summaryText(o, "bg")}${warning}`,
+      text: `${customerBlock}\n\n${summaryText(o, "bg")}${sets}${warning}`,
     }),
     tr.sendMail({
       from,

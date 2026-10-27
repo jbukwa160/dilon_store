@@ -43,9 +43,9 @@ export function AddToCart({ product }: { product: CardProduct }) {
   return (
     <div className="flex gap-3">
       <QtyStepper value={Math.min(qty, Math.max(1, limit))} max={Math.max(1, limit)} onChange={setQty} label={product.name[locale]} disabled={!limit} />
-      <button type="button" className="btn btn-wine morph relative flex-1" onClick={onAdd}>
+      <button type="button" className="btn btn-wine morph relative min-w-0 flex-1 px-4 sm:px-6" onClick={onAdd}>
         <span data-hidden={added} className="inline-flex items-center gap-2">
-          <IconBag size={18} />
+          <IconBag size={18} className="max-[379px]:hidden" />
           {limit ? t.add : t.allInCart}
         </span>
         <span data-hidden={!added} className="absolute inset-0 inline-flex items-center justify-center gap-2" aria-hidden={!added}>

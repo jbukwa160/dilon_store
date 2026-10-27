@@ -9,17 +9,23 @@
 //
 // English names come from data/translations/product-names-en.json ({ SKU: { bg, en } }). A product whose Bulgarian name
 // changed, or that is new, gets a glossary translation and is listed in data/translations/missing-en.json.
+//
+// Descriptions, specs and extra photos come from data/descriptions/descriptions.json (`npm run enrich`) and
+// data/sexwell/pages.json (`npm run sexwell`) and are written to src/data/details.json. Without confirmed prices, the
+// regular sexwell.bg price of the same product is used as the estimate.
 
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parse } from "csv-parse";
 import { CATEGORY_BY_ID, findSub } from "../src/lib/taxonomy";
-import type { Product } from "../src/lib/types";
+import type { Feature, FlagKey, Product, ProductDetails } from "../src/lib/types";
+import { sourceFor, sourceHash, type StoredDescription } from "./enrich-descriptions";
 import {
   audiencesFor, brandKey, canonicalBrand, classify, cleanName, type CsvRow, estimatePrice, fallbackEnglishName, featuresFor, imageUrl,
   type Rejection, selectRow, slugify, translit,
 } from "./rules";
+import { type SexwellEntry, type SexwellPage, words } from "./sexwell-fetch";
 
 const ROOT = path.resolve(__dirname, "..");
 const args = process.argv.slice(2);
@@ -35,6 +41,8 @@ const recheck = args.includes("--recheck-images");
 const DATA = path.join(ROOT, "data");
 const TRANSLATIONS = path.join(DATA, "translations", "product-names-en.json");
 const MISSING = path.join(DATA, "translations", "missing-en.json");
+const SEXWELL = path.join(DATA, "sexwell", "pages.json");
+const DESCRIPTIONS = path.join(DATA, "descriptions", "descriptions.json");
 const OUT = path.join(ROOT, "src", "data");
 mkdirSync(path.join(DATA, "translations"), { recursive: true });
 mkdirSync(OUT, { recursive: true });
@@ -87,8 +95,16 @@ async function readRows(): Promise<Candidate[]> {
   return out;
 }
 
-const report: { unclassified: string[]; brokenImages: string[]; placeholderImages: string[]; duplicates: number } = {
-  unclassified: [], brokenImages: [], placeholderImages: [], duplicates: 0,
+const report: {
+  unclassified: string[];
+  brokenImages: string[];
+  placeholderImages: string[];
+  duplicates: number;
+  notOnSexwell?: string[];
+  withoutDescription?: string[];
+  staleDescriptions?: string[];
+} = {
+  unclassified: [], brokenImages: [], placeholderImages: [], duplicates: 0, staleDescriptions: [],
 };
 
 /** Same product listed under several SKUs: keep the one with stock, then the newest. */
@@ -175,6 +191,44 @@ function readPrices(): Map<string, number> {
   return prices;
 }
 
+const readJson = <T,>(file: string, fallback: T): T => (existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as T) : fallback);
+
+/** Feature flags confirmed by the product description, added to the ones read from the name. */
+function withFlags(features: Feature[], flags: FlagKey[]): Feature[] {
+  const out = [...features];
+  for (const flag of flags) if (!out.some(([key]) => key === flag)) out.push([flag]);
+  return out;
+}
+
+/**
+ * Extra photos from sexwell.bg, without the one we already show. Our supplier photo has the same file name as the
+ * matching sexwell.bg photo; a photo from elsewhere (Amazon, Kaufland…) is the same packshot as sexwell.bg's first one.
+ */
+function galleryFor(main: string, images: string[]): string[] {
+  const file = (url: string) => url.split("/").pop()!.toLowerCase();
+  const rest = main.includes("sexwellshop.com") ? images.filter((url) => file(url) !== file(main)) : images.slice(1);
+  return rest.slice(0, 7);
+}
+
+const COLOUR_WORD =
+  /^(чере?н|бял|бел|червен|розов|лилав|син|зелен|злат|среб|телес|прозрач|натурал|бежов|кафяв|сив|жълт|оранж|мрежест|black|white|red|pink|purple|blue|green|gold|silver|nude|clear|beige|brown|gr[ae]y|yellow|orange)/;
+
+/**
+ * A product matched by name to sexwell.bg's page for all its colours ("Сутиен …, Черен" ↔ "Сутиен …"): the description
+ * fits, but the photos and the colour spec may be of other colours.
+ */
+function otherColours(name: string, page: SexwellPage): boolean {
+  if (page.via !== "name") return false;
+  const title = new Set(words(page.title));
+  return words(name).some((w) => !title.has(w) && COLOUR_WORD.test(w));
+}
+
+/** Spec value as shown: capital first letter, Bulgarian grams as "г" (sexwell.bg writes "гр"). */
+function specValue(s: string, locale: "bg" | "en"): string {
+  const value = locale === "bg" ? s.replace(/(\d)\s?гр\.?(?=$|[\s,;/)])/gu, "$1 г") : s;
+  return value.charAt(0).toLocaleUpperCase(locale === "bg" ? "bg-BG" : "en-GB") + value.slice(1);
+}
+
 async function main() {
   console.log(`Reading ${csvFile}`);
   const selected = dedupe(await readRows());
@@ -210,6 +264,10 @@ async function main() {
   const prices = readPrices();
   const translations: Record<string, { bg: string; en: string }> = existsSync(TRANSLATIONS) ? JSON.parse(readFileSync(TRANSLATIONS, "utf8")) : {};
   const missing: { sku: string; bg: string; category: string; sub: string }[] = [];
+  const pages = readJson<Record<string, SexwellEntry>>(SEXWELL, {});
+  const descriptions = readJson<Record<string, StoredDescription>>(DESCRIPTIONS, {});
+  const details: Record<string, ProductDetails> = {};
+  let referencePrices = 0;
   const slugs = new Set<string>();
   const products: Product[] = usable.map((c) => {
     const placement = { category: c.category, sub: c.sub };
@@ -222,7 +280,30 @@ async function main() {
     const confirmed = prices.get(c.row.SKU);
     const category = CATEGORY_BY_ID.get(c.category)!;
     const sub = findSub(c.category, c.sub)!;
-    const words = `${c.name} ${en} ${c.brand} ${category.name.bg} ${category.name.en} ${sub.name.bg} ${sub.name.en}`.toLowerCase();
+    const page = pages[c.row.SKU];
+    const sexwell = page?.found ? page : undefined;
+    // A description written from an older or different sexwell.bg page could state wrong facts; it is left out until
+    // `npm run enrich` rewrites it. A text written from the name stays when only the prompt for those changed.
+    const source = sourceFor(page);
+    const stored = descriptions[c.row.SKU];
+    const fresh =
+      stored &&
+      (stored.source === sourceHash({ name: { bg: c.name, en }, brand: c.brand, ...placement }, source) ||
+        (stored.basis === "name" && source.basis === "name"));
+    const description = fresh ? stored : undefined;
+    if (stored && !fresh) report.staleDescriptions!.push(`${c.row.SKU} ${c.name}`);
+    const colourVariant = !!sexwell && otherColours(c.name, sexwell);
+    const specs = (description?.specs ?? [])
+      .filter((s) => !(colourVariant && s.key === "colour"))
+      .map((s) => ({ key: s.key, value: { bg: specValue(s.bg, "bg"), en: specValue(s.en, "en") } }));
+    const gallery = sexwell && !colourVariant ? galleryFor(c.image, sexwell.images) : [];
+    if (description || gallery.length) {
+      details[c.row.SKU] = { ...(description ? { copy: { bg: description.bg, en: description.en } } : {}), specs, gallery };
+    }
+    const reference = confirmed === undefined && sexwell && sexwell.price > 0 ? Math.round(sexwell.price * 100) / 100 : undefined;
+    if (reference !== undefined) referencePrices++;
+    const specWords = specs.filter((s) => s.key === "material" || s.key === "colour").flatMap((s) => [s.value.bg, s.value.en]);
+    const words = `${c.name} ${en} ${c.brand} ${category.name.bg} ${category.name.en} ${sub.name.bg} ${sub.name.en} ${specWords.join(" ")}`.toLowerCase();
     const created = c.row.Created || c.row.Updated || "";
     return {
       sku: c.row.SKU,
@@ -233,12 +314,12 @@ async function main() {
       category: c.category,
       sub: c.sub,
       audiences: audiencesFor(c.name, placement),
-      price: confirmed ?? estimatePrice(c.row.SKU, c.name, c.brand, placement),
+      price: confirmed ?? reference ?? estimatePrice(c.row.SKU, c.name, c.brand, placement),
       priceConfirmed: confirmed !== undefined,
       stock: c.stock,
       image: c.image,
       ean: c.row.EAN.replace(/\D/g, "").length >= 8 ? c.row.EAN.trim() : "",
-      features: featuresFor(c.name, c.row.Color ?? "", c.category),
+      features: withFlags(featuresFor(c.name, c.row.Color ?? "", c.category), description?.flags ?? []),
       search: `${words} ${translit(words)}`.replace(/\s+/g, " "),
       created,
       rank:
@@ -251,7 +332,11 @@ async function main() {
   products.sort((a, b) => b.rank - a.rank || a.name.bg.localeCompare(b.name.bg, "bg"));
 
   writeFileSync(path.join(OUT, "catalog.json"), JSON.stringify(products));
-  const hosts = [...new Set(products.map((p) => new URL(p.image).hostname))].sort();
+  writeFileSync(path.join(OUT, "details.json"), JSON.stringify(details));
+  report.notOnSexwell = products.filter((p) => !pages[p.sku]?.found).map((p) => `${p.sku} ${p.name.bg}`);
+  report.withoutDescription = products.filter((p) => !details[p.sku]?.copy).map((p) => `${p.sku} ${p.name.bg}`);
+  const photos = [...products.map((p) => p.image), ...Object.values(details).flatMap((d) => d.gallery)];
+  const hosts = [...new Set(photos.map((url) => new URL(url).hostname))].sort();
   writeFileSync(path.join(OUT, "image-hosts.json"), JSON.stringify(hosts, null, 2) + "\n");
   writeFileSync(path.join(DATA, "import-report.json"), JSON.stringify(report, null, 2));
   writeFileSync(MISSING, JSON.stringify(missing, null, 2) + "\n");
@@ -261,6 +346,12 @@ async function main() {
   console.log(`✓ ${products.length} products written to src/data/catalog.json (${products.filter((p) => p.stock > 0).length} in stock)`);
   for (const [id, count] of perCategory) console.log(`    ${CATEGORY_BY_ID.get(id)!.name.bg}: ${count}`);
   console.log(`  ${missing.length} products without a checked English name — see data/translations/missing-en.json`);
+  const described = Object.values(details).filter((d) => d.copy).length;
+  console.log(`  ${described} with a description (${products.length - described} without — see data/import-report.json), ${Object.values(details).filter((d) => d.gallery.length).length} with extra photos`);
+  if (report.staleDescriptions!.length) {
+    console.log(`  ${report.staleDescriptions!.length} descriptions left out because their sexwell.bg source changed — run \`npm run enrich\``);
+  }
+  console.log(`  ${prices.size ? `${products.filter((p) => p.priceConfirmed).length} confirmed prices, ` : ""}${referencePrices} prices taken from sexwell.bg, ${products.filter((p) => !p.priceConfirmed).length - referencePrices} estimated`);
   console.log(`  ${report.unclassified.length} rows could not be classified — see data/import-report.json`);
 }
 

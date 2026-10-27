@@ -21,7 +21,7 @@ type Errors = Record<string, string>;
 const ClearErrorCtx = createContext<(name: string) => void>(() => {});
 
 export function CheckoutForm() {
-  const { lines, ready, subtotal, setQty, remove, clear } = useCart();
+  const { lines, ready, subtotal, discount, total, bundles, setQty, remove, clear } = useCart();
   const router = useRouter();
   const locale = useLocale();
   const t = useT().checkout;
@@ -40,7 +40,8 @@ export function CheckoutForm() {
     });
   const [sending, setSending] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
-  const shipping = shippingPrice(method, subtotal);
+  // Free delivery counts what the goods cost after bundle discounts, the same as the server.
+  const shipping = shippingPrice(method, total);
   const needs = SHIPPING.methods.find((m) => m.id === method)!.needs;
 
   if (!ready) return <div className="h-96" aria-busy="true" />;
@@ -77,6 +78,7 @@ export function CheckoutForm() {
       adult: fd.get("adult") === "on",
       website: value("website"),
       items: lines.map((l) => ({ sku: l.sku, qty: l.qty })),
+      bundles: bundles.map((b) => ({ skus: b.skus })),
     };
     setSending(true);
     setFormError("");
@@ -124,7 +126,7 @@ export function CheckoutForm() {
             <div className="grid gap-3 sm:grid-cols-3">
               {SHIPPING.methods.map((m) => {
                 const checked = method === m.id;
-                const cost = shippingPrice(m.id, subtotal);
+                const cost = shippingPrice(m.id, total);
                 return (
                   <label
                     key={m.id}
@@ -222,20 +224,26 @@ export function CheckoutForm() {
             ))}
           </ul>
           <div className="border-t border-line pt-4">
-            <FreeShippingMeter subtotal={subtotal} />
+            <FreeShippingMeter subtotal={total} />
           </div>
           <dl className="mt-4 space-y-2 text-sm">
             <div className="flex justify-between">
               <dt className="text-ink-2">{t.items}</dt>
               <dd className="tabular">{price(subtotal, locale)}</dd>
             </div>
+            {discount > 0 && (
+              <div className="flex justify-between text-moss">
+                <dt>{cartT.bundleDiscount}</dt>
+                <dd className="tabular">−{price(discount, locale)}</dd>
+              </div>
+            )}
             <div className="flex justify-between">
               <dt className="text-ink-2">{t.shipping}</dt>
               <dd className="tabular">{shipping ? price(shipping, locale) : t.freeShipping}</dd>
             </div>
             <div className="flex items-baseline justify-between border-t border-line pt-3">
               <dt className="font-semibold">{t.total}</dt>
-              <dd className="tabular text-xl font-semibold">{price(subtotal + shipping, locale)}</dd>
+              <dd className="tabular text-xl font-semibold">{price(total + shipping, locale)}</dd>
             </div>
           </dl>
           <p className="mt-1 text-right text-xs text-muted">{t.inclVat}</p>
@@ -264,7 +272,7 @@ export function CheckoutForm() {
           )}
 
           <button type="submit" className="btn btn-wine mt-5 w-full" disabled={sending} aria-busy={sending}>
-            {sending ? t.sending : t.submit(price(subtotal + shipping, locale))}
+            {sending ? t.sending : t.submit(price(total + shipping, locale))}
           </button>
           <p className="mt-3 flex items-center justify-center gap-2 text-xs text-muted">
             <IconLock size={14} /> {t.plainBox}

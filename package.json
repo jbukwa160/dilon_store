@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "import": "tsx scripts/import-catalog.ts"
+    "import": "tsx scripts/import-catalog.ts",
+    "sexwell": "tsx scripts/sexwell-fetch.ts",
+    "enrich": "tsx scripts/enrich-descriptions.ts"
   },
   "dependencies": {
     "next": "16.4.2",

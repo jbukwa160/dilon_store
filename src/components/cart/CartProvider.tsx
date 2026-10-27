@@ -1,7 +1,8 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { CART_KEY } from "@/lib/site";
+import { type AppliedBundle, applyBundles, type BundleClaim } from "@/lib/bundle-math";
+import { CART_BUNDLES_KEY, CART_KEY } from "@/lib/site";
 import type { CardProduct } from "@/lib/types";
 
 export type CartLine = CardProduct & { qty: number };
@@ -12,12 +13,19 @@ type CartContext = {
   ready: boolean;
   count: number;
   subtotal: number;
+  /** Bundles whose products are all in the cart, with their discount. */
+  bundles: AppliedBundle[];
+  discount: number;
+  /** Subtotal minus bundle discounts: what the goods cost. */
+  total: number;
   open: boolean;
   setOpen: (open: boolean) => void;
   /** Adds `qty` (capped at stock). Returns the quantity actually in the cart afterwards. */
   add: (product: CardProduct, qty?: number) => number;
   setQty: (sku: string, qty: number) => void;
   remove: (sku: string) => void;
+  /** Adds one of each product and remembers them as a set, so the set's discount applies. */
+  addBundle: (products: CardProduct[], discount: number) => void;
   clear: () => void;
   /** Increments every time something is added, so the cart badge can play its bump. */
   addedTick: number;
@@ -26,6 +34,18 @@ type CartContext = {
 const Ctx = createContext<CartContext | null>(null);
 
 export const MAX_PER_LINE = 20;
+
+function readBundles(): BundleClaim[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CART_BUNDLES_KEY) ?? "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+      (b) => b && Array.isArray(b.skus) && b.skus.length >= 2 && b.skus.every((s: unknown) => typeof s === "string") && Number.isFinite(b.discount),
+    );
+  } catch {
+    return [];
+  }
+}
 
 function read(): CartLine[] {
   try {
@@ -44,6 +64,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [open, setOpen] = useState(false);
   const [addedTick, setAddedTick] = useState(0);
+  const [claims, setClaims] = useState<BundleClaim[]>([]);
   // Every change goes through commit(), so linesRef is always current, even between two quick clicks.
   const linesRef = useRef<CartLine[]>([]);
   const commit = useCallback((update: (current: CartLine[]) => CartLine[]) => {
@@ -57,6 +78,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     commit(() => stored);
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setReady(true);
+    setClaims(readBundles());
     if (!stored.length) return;
     const skus = stored.map((l) => l.sku).join(",");
     fetch(`/api/cart?skus=${encodeURIComponent(skus)}`)
@@ -87,9 +109,21 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     }
   }, [lines, ready]);
 
+  // A set whose product was removed no longer counts, also when the product is added again on its own.
+  const liveClaims = useMemo(() => claims.filter((c) => c.skus.every((sku) => lines.some((l) => l.sku === sku))), [claims, lines]);
+  useEffect(() => {
+    if (!ready) return;
+    try {
+      localStorage.setItem(CART_BUNDLES_KEY, JSON.stringify(liveClaims));
+    } catch {
+      // As above.
+    }
+  }, [liveClaims, ready]);
+
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === CART_KEY) commit(() => read());
+      if (e.key === CART_BUNDLES_KEY) setClaims(readBundles());
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -115,16 +149,32 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         .map((l) => (l.sku === sku ? { ...l, qty: Math.max(0, Math.min(qty, Math.min(MAX_PER_LINE, l.stock))) } : l))
         .filter((l) => l.qty > 0),
     );
+    if (qty <= 0) setClaims((current) => current.filter((c) => !c.skus.includes(sku)));
   }, [commit]);
 
-  const remove = useCallback((sku: string) => commit((current) => current.filter((l) => l.sku !== sku)), [commit]);
-  const clear = useCallback(() => commit(() => []), [commit]);
+  const remove = useCallback((sku: string) => {
+    commit((current) => current.filter((l) => l.sku !== sku));
+    setClaims((current) => current.filter((c) => !c.skus.includes(sku)));
+  }, [commit]);
+  const clear = useCallback(() => {
+    commit(() => []);
+    setClaims([]);
+  }, [commit]);
+
+  const addBundle = useCallback((products: CardProduct[], discount: number) => {
+    for (const p of products) add(p, 1);
+    const skus = products.map((p) => p.sku);
+    const key = skus.join("+");
+    setClaims((current) => (current.some((c) => c.skus.join("+") === key) ? current : [...current, { skus, discount }]));
+  }, [add]);
 
   const value = useMemo<CartContext>(() => {
     const count = lines.reduce((s, l) => s + l.qty, 0);
     const subtotal = Math.round(lines.reduce((s, l) => s + l.qty * l.price, 0) * 100) / 100;
-    return { lines, ready, count, subtotal, open, setOpen, add, setQty, remove, clear, addedTick };
-  }, [lines, ready, open, add, setQty, remove, clear, addedTick]);
+    const { applied, discount } = applyBundles(lines, liveClaims);
+    const total = Math.round((subtotal - discount) * 100) / 100;
+    return { lines, ready, count, subtotal, bundles: applied, discount, total, open, setOpen, add, setQty, remove, addBundle, clear, addedTick };
+  }, [lines, liveClaims, ready, open, add, setQty, remove, addBundle, clear, addedTick]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

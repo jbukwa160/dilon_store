@@ -56,7 +56,7 @@ export function FreeShippingMeter({ subtotal }: { subtotal: number }) {
 }
 
 export function CartDrawer() {
-  const { lines, open, setOpen, subtotal, setQty, remove, count } = useCart();
+  const { lines, open, setOpen, subtotal, discount, total, setQty, remove, count } = useCart();
   const t = useT().cart;
   const locale = useLocale();
   const P = paths(locale);
@@ -96,7 +96,7 @@ export function CartDrawer() {
         ) : (
           <>
             <div className="border-b border-line px-5 py-4">
-              <FreeShippingMeter subtotal={subtotal} />
+              <FreeShippingMeter subtotal={total} />
             </div>
             <ul className="flex-1 divide-y divide-line overflow-y-auto overscroll-contain px-5">
               {lines.map((l) => {
@@ -124,9 +124,21 @@ export function CartDrawer() {
               })}
             </ul>
             <div className="border-t border-line bg-bone px-5 pt-4 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+              {discount > 0 && (
+                <dl className="mb-2 space-y-1 text-sm">
+                  <div className="flex justify-between">
+                    <dt className="text-ink-2">{t.subtotal}</dt>
+                    <dd className="tabular">{price(subtotal, locale)}</dd>
+                  </div>
+                  <div className="flex justify-between text-moss">
+                    <dt>{t.bundleDiscount}</dt>
+                    <dd className="tabular">−{price(discount, locale)}</dd>
+                  </div>
+                </dl>
+              )}
               <div className="flex items-baseline justify-between">
-                <span className="text-sm text-ink-2">{t.subtotal}</span>
-                <span className="tabular text-lg font-semibold">{price(subtotal, locale)}</span>
+                <span className="text-sm text-ink-2">{discount > 0 ? t.total : t.subtotal}</span>
+                <span className="tabular text-lg font-semibold">{price(total, locale)}</span>
               </div>
               <p className="mt-1 text-xs text-muted">{t.shippingNote}</p>
               <Link href={P.checkout()} className="btn btn-wine mt-4 w-full">
