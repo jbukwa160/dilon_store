@@ -14,7 +14,7 @@ import { alternates, paths } from "@/i18n/paths";
 import { bundlesFor } from "@/lib/bundles";
 import { allProducts, getBySku, getProduct, related, toCard } from "@/lib/catalog";
 import { getDetails } from "@/lib/details";
-import { decimal, price, priceShort } from "@/lib/format";
+import { clip, decimal, price, priceShort } from "@/lib/format";
 import { SHIPPING, SITE } from "@/lib/site";
 import { CATEGORY_BY_ID, findSub } from "@/lib/taxonomy";
 import type { Feature, FeatureKey, ProductDetails, SpecKey } from "@/lib/types";
@@ -41,12 +41,6 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     alternates: alternates(locale, `/product/${p.slug}`),
     openGraph: { title: name, description, images: [{ url: p.image }] },
   };
-}
-
-/** Cuts text at a word boundary. */
-function clip(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, text.lastIndexOf(" ", max - 1)).replace(/[,;:—–-]$/, "")}…`;
 }
 
 /** Facts read from the name that a spec from the description already covers. */
@@ -140,7 +134,8 @@ export default async function ProductPage({ params }: Props) {
     "@context": "https://schema.org",
     "@type": "Product",
     name,
-    image: images,
+    // Photos found by `npm run photos` are served by the shop itself ("/products/…").
+    image: images.map((src) => (src.startsWith("/") ? `${SITE.url}${src}` : src)),
     ...(copy ? { description: [copy.lead, ...copy.body].join(" ") } : {}),
     sku: p.sku,
     ...(p.ean ? { gtin: p.ean } : {}),

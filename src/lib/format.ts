@@ -35,3 +35,9 @@ export function priceShort(value: number, locale: Locale): string {
   if (!Number.isInteger(value)) return price(value, locale);
   return new Intl.NumberFormat(INTL[locale], { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(value).replace(/\s/g, " ");
 }
+
+/** Cuts text at a word boundary, e.g. for a meta description. */
+export function clip(text: string, max = 160): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, text.lastIndexOf(" ", max - 1)).replace(/[,;:—–-]$/, "")}…`;
+}

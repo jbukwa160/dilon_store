@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "import": "tsx scripts/import-catalog.ts",
     "sexwell": "tsx scripts/sexwell-fetch.ts",
-    "enrich": "tsx scripts/enrich-descriptions.ts"
+    "enrich": "tsx scripts/enrich-descriptions.ts",
+    "photos": "tsx scripts/find-photos.ts",
+    "intros": "tsx scripts/write-intros.ts"
   },
   "dependencies": {
     "next": "16.4.2",
@@ -29,6 +31,7 @@
     "csv-parse": "^7.0.3",
     "eslint": "^9",
     "eslint-config-next": "16.4.2",
+    "sharp": "^0.35.5",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5"

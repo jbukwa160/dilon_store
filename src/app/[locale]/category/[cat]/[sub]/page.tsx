@@ -5,6 +5,8 @@ import { isLocale } from "@/i18n/config";
 import { DICT } from "@/i18n/dict";
 import { alternates, paths } from "@/i18n/paths";
 import { list, NAV, parseFilters } from "@/lib/catalog";
+import { clip } from "@/lib/format";
+import { subIntro } from "@/lib/intros";
 
 type Props = {
   params: Promise<{ locale: string; cat: string; sub: string }>;
@@ -24,7 +26,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { category, subcategory } = found;
   return {
     title: `${subcategory.name[locale]} — ${category.name[locale]}`,
-    description: DICT[locale].meta.subDescription(subcategory.name[locale], subcategory.count, category.lede[locale]),
+    description: clip(subIntro(cat, sub, locale)?.lede ?? DICT[locale].meta.subDescription(subcategory.name[locale], subcategory.count, category.lede[locale])),
     alternates: alternates(locale, `/category/${cat}/${sub}`),
   };
 }
@@ -38,6 +40,7 @@ export default async function SubcategoryPage({ params, searchParams }: Props) {
   const P = paths(locale);
   const filters = { ...parseFilters(await searchParams), cat: "" };
   const result = list({ category: category.id, sub: subcategory.id }, filters, locale);
+  const intro = subIntro(category.id, subcategory.id, locale);
 
   return (
     <Listing
@@ -45,7 +48,8 @@ export default async function SubcategoryPage({ params, searchParams }: Props) {
       crumbs={[{ href: P.home(), label: t.common.home }, { href: P.category(category.id), label: category.name[locale] }, { label: subcategory.name[locale] }]}
       eyebrow={category.name[locale]}
       title={subcategory.name[locale]}
-      lede={category.lede[locale]}
+      lede={intro?.lede ?? category.lede[locale]}
+      about={intro && { title: t.listing.aboutCategory(subcategory.name[locale]), paragraphs: intro.about }}
       chips={[
         { href: P.category(category.id), label: t.common.all, count: category.count, active: false },
         ...category.subs.map((s) => ({ href: P.category(category.id, s.id), label: s.name[locale], count: s.count, active: s.id === subcategory.id })),

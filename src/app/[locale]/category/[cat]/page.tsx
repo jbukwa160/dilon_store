@@ -33,6 +33,7 @@ export default async function CategoryPage({ params, searchParams }: Props) {
       eyebrow={t.listing.countProducts(count(category.count, locale))}
       title={category.name[locale]}
       lede={category.lede[locale]}
+      about={{ title: t.listing.aboutCategory(category.name[locale]), paragraphs: [category.about[locale]] }}
       chips={[
         { href: P.category(category.id), label: t.common.all, count: category.count, active: true },
         ...category.subs.map((s) => ({ href: P.category(category.id, s.id), label: s.name[locale], count: s.count, active: false })),

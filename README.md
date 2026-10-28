@@ -102,6 +102,37 @@ npm run import    # puts everything into src/data/catalog.json and src/data/deta
 To correct one description by hand, edit it in `data/descriptions/descriptions.json` and run `npm run import`; it is
 only rewritten if its sexwell.bg text changes.
 
+## More photos (`npm run photos`)
+
+Products with only one or two photos get more from the web. For each product a web search (OpenAI `gpt-5.4-mini`) finds
+pages of exactly this product — the brand's own site first, then retailers and wholesalers, checked by EAN where there is
+one. The script reads the photos on those pages (structured data, gallery markup, files with the same product code),
+drops small ones and copies of photos we already have, and lets `gpt-5.5` compare every candidate with our own photo.
+A photo is kept only if it is
+
+- the same product in the same colour and, for packaged goods, the same packaging design (no older or regional box),
+- a new view (back, side, worn by a model, close-up, packaging) — not the same shot cropped differently,
+- clean: no watermark, no other shop's logo or text, no size chart or banner, no visible nipples or genitals, nothing
+  explicit.
+
+Kept photos are saved as WebP (max 1000 px) in `public/products/<sku>/` — the shop serves them itself, nothing is
+hot-linked — and listed with their source page in `data/photos/photos.json`. `npm run import` adds them to the gallery
+after the sexwell.bg photos. Products that were searched are not searched again; `--retry` searches again where nothing
+was found, `--only <SKU,…>` searches those products again and replaces their photos. To remove a photo, delete it from
+`data/photos/photos.json` (and the file) and run `npm run import`.
+
+## Texts on category and brand pages (`npm run intros`)
+
+Every subcategory page has its own lead under the title and a short "Good to know" guide under the products (what it
+is, what to look for, a care tip); every brand page has a lead and a short "About" text. Category pages show the
+category's "how to choose" text there. The texts are in `src/data/intros.json` (Bulgarian and English).
+
+Brand texts use only facts from the manufacturer paragraphs of the sexwell.bg descriptions or, where there are none,
+facts that a web search found on the brand's own site or other reliable pages — saved with their sources in
+`data/intros/facts.json` so they can be checked. Without facts the text is only about the products we carry. The same
+checks as for product descriptions apply (nothing copied, no invented numbers, no other shop). Running it again only
+rewrites pages whose products or facts changed.
+
 ## "Buy together" sets
 
 Product pages offer the product together with matching extras at a discount: **„Двойка“ / Duo** (product + 1 extra,
@@ -186,7 +217,8 @@ the first paint, and the gate re-checks the cookie after React loads. Without Ja
 - Product pictures are hot-linked from the suppliers (mostly sexwellshop.com, Amazon, Kaufland) and the extra gallery
   photos from sexwell.bg. Next.js caches resized copies for 30 days, but if a site blocks hot-linking the pictures must
   be downloaded and self-hosted.
-- The OpenAI API key in `.env.local` is only needed for `npm run enrich`, not on the server.
+- The OpenAI API key in `.env.local` is only needed for `npm run enrich`, `npm run photos` and `npm run intros`, not on
+  the server.
 
 ## Scripts
 
@@ -195,5 +227,6 @@ the first paint, and the gate re-checks the cookie after React loads. Without Ja
 | `npm run dev` / `npm run build` / `npm start` | Development server / production build / production server |
 | `npm run import -- --file <csv>` | Rebuild the catalog from the export |
 | `npm run sexwell` / `npm run enrich` | Look products up on sexwell.bg / write their descriptions with OpenAI |
+| `npm run photos` / `npm run intros` | Find more product photos / write category and brand texts (OpenAI) |
 | `npm run typecheck` / `npm run lint` | Type check / ESLint |
 # dilon_store

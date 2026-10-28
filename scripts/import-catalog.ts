@@ -10,9 +10,10 @@
 // English names come from data/translations/product-names-en.json ({ SKU: { bg, en } }). A product whose Bulgarian name
 // changed, or that is new, gets a glossary translation and is listed in data/translations/missing-en.json.
 //
-// Descriptions, specs and extra photos come from data/descriptions/descriptions.json (`npm run enrich`) and
-// data/sexwell/pages.json (`npm run sexwell`) and are written to src/data/details.json. Without confirmed prices, the
-// regular sexwell.bg price of the same product is used as the estimate.
+// Descriptions, specs and extra photos come from data/descriptions/descriptions.json (`npm run enrich`),
+// data/sexwell/pages.json (`npm run sexwell`) and data/photos/photos.json (`npm run photos`) and are written to
+// src/data/details.json. Without confirmed prices, the regular sexwell.bg price of the same product is used as the
+// estimate.
 
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -21,6 +22,7 @@ import { parse } from "csv-parse";
 import { CATEGORY_BY_ID, findSub } from "../src/lib/taxonomy";
 import type { Feature, FlagKey, Product, ProductDetails } from "../src/lib/types";
 import { sourceFor, sourceHash, type StoredDescription } from "./enrich-descriptions";
+import type { PhotoEntry } from "./find-photos";
 import {
   audiencesFor, brandKey, canonicalBrand, classify, cleanName, type CsvRow, estimatePrice, fallbackEnglishName, featuresFor, imageUrl,
   type Rejection, selectRow, slugify, translit,
@@ -43,6 +45,7 @@ const TRANSLATIONS = path.join(DATA, "translations", "product-names-en.json");
 const MISSING = path.join(DATA, "translations", "missing-en.json");
 const SEXWELL = path.join(DATA, "sexwell", "pages.json");
 const DESCRIPTIONS = path.join(DATA, "descriptions", "descriptions.json");
+const PHOTOS = path.join(DATA, "photos", "photos.json");
 const OUT = path.join(ROOT, "src", "data");
 mkdirSync(path.join(DATA, "translations"), { recursive: true });
 mkdirSync(OUT, { recursive: true });
@@ -266,6 +269,8 @@ async function main() {
   const missing: { sku: string; bg: string; category: string; sub: string }[] = [];
   const pages = readJson<Record<string, SexwellEntry>>(SEXWELL, {});
   const descriptions = readJson<Record<string, StoredDescription>>(DESCRIPTIONS, {});
+  const found = readJson<Record<string, PhotoEntry>>(PHOTOS, {});
+  let foundPhotos = 0;
   const details: Record<string, ProductDetails> = {};
   let referencePrices = 0;
   const slugs = new Set<string>();
@@ -296,7 +301,10 @@ async function main() {
     const specs = (description?.specs ?? [])
       .filter((s) => !(colourVariant && s.key === "colour"))
       .map((s) => ({ key: s.key, value: { bg: specValue(s.bg, "bg"), en: specValue(s.en, "en") } }));
-    const gallery = sexwell && !colourVariant ? galleryFor(c.image, sexwell.images) : [];
+    // Photos found by `npm run photos` (saved in public/) come after the sexwell.bg ones.
+    const extra = (found[c.row.SKU]?.photos ?? []).map((x) => x.file).filter((file) => existsSync(path.join(ROOT, "public", file)));
+    foundPhotos += extra.length;
+    const gallery = [...(sexwell && !colourVariant ? galleryFor(c.image, sexwell.images) : []), ...extra].slice(0, 9);
     if (description || gallery.length) {
       details[c.row.SKU] = { ...(description ? { copy: { bg: description.bg, en: description.en } } : {}), specs, gallery };
     }
@@ -336,7 +344,8 @@ async function main() {
   report.notOnSexwell = products.filter((p) => !pages[p.sku]?.found).map((p) => `${p.sku} ${p.name.bg}`);
   report.withoutDescription = products.filter((p) => !details[p.sku]?.copy).map((p) => `${p.sku} ${p.name.bg}`);
   const photos = [...products.map((p) => p.image), ...Object.values(details).flatMap((d) => d.gallery)];
-  const hosts = [...new Set(photos.map((url) => new URL(url).hostname))].sort();
+  // Photos found by `npm run photos` are local ("/products/…") and need no remote host.
+  const hosts = [...new Set(photos.filter((url) => /^https?:/.test(url)).map((url) => new URL(url).hostname))].sort();
   writeFileSync(path.join(OUT, "image-hosts.json"), JSON.stringify(hosts, null, 2) + "\n");
   writeFileSync(path.join(DATA, "import-report.json"), JSON.stringify(report, null, 2));
   writeFileSync(MISSING, JSON.stringify(missing, null, 2) + "\n");
@@ -347,7 +356,7 @@ async function main() {
   for (const [id, count] of perCategory) console.log(`    ${CATEGORY_BY_ID.get(id)!.name.bg}: ${count}`);
   console.log(`  ${missing.length} products without a checked English name — see data/translations/missing-en.json`);
   const described = Object.values(details).filter((d) => d.copy).length;
-  console.log(`  ${described} with a description (${products.length - described} without — see data/import-report.json), ${Object.values(details).filter((d) => d.gallery.length).length} with extra photos`);
+  console.log(`  ${described} with a description (${products.length - described} without — see data/import-report.json), ${Object.values(details).filter((d) => d.gallery.length).length} with extra photos (${foundPhotos} found by \`npm run photos\`)`);
   if (report.staleDescriptions!.length) {
     console.log(`  ${report.staleDescriptions!.length} descriptions left out because their sexwell.bg source changed — run \`npm run enrich\``);
   }

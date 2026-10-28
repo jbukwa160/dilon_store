@@ -47,6 +47,7 @@ export function Listing({
   q,
   hideBrandFilter = false,
   empty,
+  about,
 }: {
   locale: Locale;
   crumbs: Crumb[];
@@ -60,6 +61,8 @@ export function Listing({
   q?: string;
   hideBrandFilter?: boolean;
   empty?: React.ReactNode;
+  /** Text under the products, on the first page only. */
+  about?: { title: string; paragraphs: string[] };
 }) {
   const t = DICT[locale];
   const activeCount = filters.brands.length + (filters.price ? 1 : 0) + (filters.stock ? 1 : 0);
@@ -132,6 +135,19 @@ export function Listing({
         </div>
         {result.pages > 1 && <Pagination locale={locale} basePath={basePath} filters={filters} page={result.page} pages={result.pages} q={q} />}
       </ListingShell>
+
+      {about && about.paragraphs.length > 0 && result.page === 1 && (
+        <section className="mt-20 max-w-3xl border-t border-line pt-10" aria-labelledby="about">
+          <h2 id="about" className="font-display text-[1.75rem] leading-tight font-semibold sm:text-[2rem]">
+            {about.title}
+          </h2>
+          <div className="mt-4 space-y-3.5 text-[0.9375rem] leading-relaxed text-ink-2">
+            {about.paragraphs.map((paragraph, i) => (
+              <p key={i}>{paragraph}</p>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

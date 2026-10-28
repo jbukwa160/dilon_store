@@ -22,6 +22,7 @@ import path from "node:path";
 import { z } from "zod";
 import { CATEGORY_BY_ID, findSub } from "../src/lib/taxonomy";
 import { FLAG_KEYS, type FlagKey, type Product, type ProductCopy, SPEC_KEYS, type SpecKey } from "../src/lib/types";
+import { FatalApiError, loadEnv, respond, tokenLine } from "./openai";
 import type { SexwellEntry } from "./sexwell-fetch";
 
 const ROOT = path.resolve(__dirname, "..");
@@ -47,17 +48,6 @@ export type StoredDescription = {
   specs: { key: SpecKey; bg: string; en: string }[];
   flags: FlagKey[];
 };
-
-function loadEnv() {
-  for (const file of [".env.local", ".env"]) {
-    const full = path.join(ROOT, file);
-    if (!existsSync(full)) continue;
-    for (const line of readFileSync(full, "utf8").split(/\r?\n/)) {
-      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
-      if (m && !(m[1] in process.env)) process.env[m[1]] = m[2].replace(/^(["'])(.*)\1$/, "$2");
-    }
-  }
-}
 
 // ── Prompt ──
 
@@ -226,55 +216,16 @@ function problems(r: Result, p: Product, source: Source): string[] {
 
 // ── API ──
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-let tokensIn = 0;
-let tokensOut = 0;
-
-/** No credits left or a wrong key: retrying cannot help, the whole run stops. */
-class FatalApiError extends Error {}
-
 async function ask(input: string): Promise<Result> {
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: MODEL,
-        instructions: INSTRUCTIONS,
-        input,
-        reasoning: { effort: "low" },
-        text: { format: { type: "json_schema", name: "product_copy", strict: true, schema: SCHEMA } },
-        max_output_tokens: 12000,
-        store: false,
-      }),
-      signal: AbortSignal.timeout(180_000),
-    }).catch((err: Error) => err);
-    if (!(res instanceof Error) && (res.status === 401 || res.status === 429)) {
-      const body = await res.clone().json().catch(() => ({}));
-      const code = body.error?.code ?? body.error?.type;
-      if (res.status === 401 || code === "insufficient_quota" || code === "credit_balance_exhausted") {
-        throw new FatalApiError(`OpenAI ${res.status} (${code ?? "unauthorized"}): ${body.error?.message ?? ""}`);
-      }
-    }
-    if (res instanceof Error || res.status === 429 || res.status >= 500) {
-      if (attempt >= 5) throw res instanceof Error ? res : new Error(`OpenAI ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      const wait = res instanceof Error ? 0 : Number(res.headers.get("retry-after")) * 1000;
-      await sleep(Math.max(wait || 0, 3000 * 2 ** attempt));
-      continue;
-    }
-    const data = await res.json();
-    if (!res.ok) throw new Error(`OpenAI ${res.status}: ${data.error?.message ?? "unknown error"}`);
-    tokensIn += data.usage?.input_tokens ?? 0;
-    tokensOut += data.usage?.output_tokens ?? 0;
-    if (data.status !== "completed") throw new Error(`response ${data.status}: ${JSON.stringify(data.incomplete_details)}`);
-    const text = (data.output as { type: string; content?: { type: string; text?: string; refusal?: string }[] }[])
-      .filter((o) => o.type === "message")
-      .flatMap((o) => o.content ?? [])
-      .map((c) => c.text ?? (c.refusal ? `REFUSAL: ${c.refusal}` : ""))
-      .join("");
-    if (text.startsWith("REFUSAL")) throw new Error(text);
-    return resultShape.parse(JSON.parse(text));
-  }
+  const text = await respond({
+    model: MODEL,
+    instructions: INSTRUCTIONS,
+    input,
+    reasoning: { effort: "low" },
+    text: { format: { type: "json_schema", name: "product_copy", strict: true, schema: SCHEMA } },
+    max_output_tokens: 12000,
+  });
+  return resultShape.parse(JSON.parse(text));
 }
 
 const tidy = (s: string) => s.replace(/\s+/g, " ").replace(/\s+([,.;:!?])/g, "$1").trim();
@@ -324,7 +275,6 @@ async function describe(p: Product, source: Source): Promise<{ result: StoredDes
 
 async function main() {
   loadEnv();
-  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is missing — add it to .env.local");
   mkdirSync(path.dirname(OUT), { recursive: true });
   const products = JSON.parse(readFileSync(path.join(ROOT, "src", "data", "catalog.json"), "utf8")) as Product[];
   const pages = JSON.parse(readFileSync(PAGES, "utf8")) as Record<string, SexwellEntry>;
@@ -381,7 +331,7 @@ async function main() {
           failed++;
           console.warn(`  ${job.p.sku}: ${(err as Error).message.slice(0, 300)}`);
         }
-        if (++done % 25 === 0) console.log(`  ${done}/${todo.length} · ${tokensIn.toLocaleString("en")} tokens in, ${tokensOut.toLocaleString("en")} out`);
+        if (++done % 25 === 0) console.log(`  ${done}/${todo.length} · ${tokenLine()}`);
         if (Date.now() - lastSave > 15_000) {
           save();
           lastSave = Date.now();
@@ -396,7 +346,7 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  console.log(`✓ ${done - failed} described, ${failed} failed · ${tokensIn.toLocaleString("en")} tokens in, ${tokensOut.toLocaleString("en")} out`);
+  console.log(`✓ ${done - failed} described, ${failed} failed · ${tokenLine()}`);
   console.log(`  ${Object.keys(review).length} kept with a problem the retry did not fix — see ${path.relative(ROOT, REVIEW)}`);
 }
 

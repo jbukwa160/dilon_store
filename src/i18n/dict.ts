@@ -80,6 +80,8 @@ const bg = {
   card: { soldOut: "Изчерпан" },
   listing: {
     productsSection: "Продукти",
+    aboutCategory: (name: string) => `Какво да знаете за „${name}“`,
+    aboutBrand: (name: string) => `За ${name}`,
     sortBy: "Подреди:",
     sorts: { "": "Препоръчани", new: "Най-нови", "price-asc": "Цена: възходяща", "price-desc": "Цена: низходяща" } as Record<string, string>,
     filters: "Филтри",
@@ -459,6 +461,8 @@ const en: Dict = {
   card: { soldOut: "Sold out" },
   listing: {
     productsSection: "Products",
+    aboutCategory: (name: string) => `Good to know: ${name}`,
+    aboutBrand: (name: string) => `About ${name}`,
     sortBy: "Sort by:",
     sorts: { "": "Recommended", new: "Newest", "price-asc": "Price: low to high", "price-desc": "Price: high to low" },
     filters: "Filters",
